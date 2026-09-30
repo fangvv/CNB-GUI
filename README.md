@@ -21,6 +21,14 @@
 
 ---
 
+## 界面预览
+
+![面板主界面](Screenshot1.png)
+
+![设置窗口](Screenshot2.png)
+
+---
+
 ## 设计思路
 
 - **零安装、零依赖**：只依赖 Windows 自带的 PowerShell 5.1 与 .NET WinForms，拷走两个文件就能用，不引入任何运行时。
