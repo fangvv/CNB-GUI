@@ -88,7 +88,7 @@
 
 ## 更多免费额度
 
-[CNB](https://cnb.cool) 本身已提供免费额度，在 [创新空间社区](https://qiwoo.edu.cn/ui/innovation-space) 完成**高校身份认证**后，还可以获得更多免费额度。认证方法及具体额度规则，以该平台页面说明为准。
+[CNB](https://cnb.cool) 本身已提供免费额度，在 [启悟](https://qiwoo.edu.cn/ui/innovation-space) 完成**高校身份认证**后，还可以获得更多免费额度。认证方法及具体额度规则，以该平台页面说明为准。
 
 ---
 
