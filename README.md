@@ -39,7 +39,7 @@
 
 **环境要求**：Windows 10 / 11（自带 Windows PowerShell 5.1+）。
 
-1. 双击 `CNB-Workspace.bat`。
+1. 双击 `CNB-GUI.exe`（单文件版）或 `CNB-Workspace.bat`，二选一即可。
 2. 首次运行会弹出「设置」窗口，填入：
    - **访问令牌**：在 <https://cnb.cool/profile/token> 生成，授权范围勾选 `account-engage:rw`、`repo-cnb-trigger:rw`、`repo-cnb-detail:r`。
    - **默认仓库**：格式 `组织/仓库`，例如 `your-org/your-repo`。
@@ -76,10 +76,10 @@
 
 ## 设计思路
 
-- **零安装、零依赖**：只依赖 Windows 自带的 PowerShell 5.1 与 .NET WinForms，拷走两个文件就能用，不引入任何运行时。
+- **零安装、零依赖**：只依赖 Windows 自带的 PowerShell 5.1 与 .NET WinForms，不引入任何运行时；想省事可直接用单文件版 `CNB-GUI.exe`。
 - **直连 OpenAPI**：直接调用 `https://api.cnb.cool` 的 OpenAPI，不依赖第三方 CLI，行为完全可控。
 - **令牌本地加密**：访问令牌用 Windows DPAPI 加密后保存在本机 `%APPDATA%\cnb-ws\config.json`，换电脑或换 Windows 用户需重新填写，绝不明文落盘。
-- **无黑窗口启动**：启动器经 `mshta` 中转，以隐藏方式拉起 PowerShell 后立刻退出，双击不留黑色命令行窗口；关面板也不会把 VSCode / 浏览器一起带走（打开链接统一走常驻的 `explorer.exe` 中转）。
+- **无黑窗口启动**：无论是单文件版 `CNB-GUI.exe` 还是 `CNB-Workspace.bat`，都会把 PowerShell 以隐藏方式拉起，双击不留黑色命令行窗口；关面板也不会把 VSCode / 浏览器一起带走（打开链接统一走常驻的 `explorer.exe` 中转）。
 - **托盘 + 单例**：它是常驻型工具而非一次性脚本，关窗口即缩托盘；单例用内核级命名 Mutex 判重，崩了也不会留下假占用。
 - **编码细节**：`cnb-gui.ps1` 存为 UTF-8 带 BOM、`CNB-Workspace.bat` 存为 GBK，三处对上才能保证中文不乱码（详见下文「常见问题」）。
 
@@ -106,6 +106,7 @@
 - **顶部输入框改了不生效 / 重启就丢**：顶部输入框只是临时改动，想长期记住请在「设置」里改并点「保存」。
 - **想开第二个实例（调试用）**：先 `set CNB_GUI_MULTI=1` 再启动即可绕过单例限制。
 - **想看到启动命令输出（排障）**：命令行里运行 `CNB-Workspace.bat --console`，以可见方式启动。
+- **单文件版和源码版选哪个**：图省事、只想要一个文件，直接用 `CNB-GUI.exe`；想改面板代码或 `--console` 排障，用 `CNB-Workspace.bat` + `cnb-gui.ps1`（改完 ps1 后双击 `build-exe.bat` 可重新打成 exe）。
 
 ---
 
@@ -145,6 +146,8 @@
 
 ## 文件说明
 
-- `CNB-Workspace.bat`：启动器（双击即可，GBK 编码，带 `--console` 调试入口）。
+- `CNB-GUI.exe`：单文件版，双击即用（把 `cnb-gui.ps1` 打包进 exe，无黑色命令行窗口）。
+- `CNB-Workspace.bat`：源码版启动器（双击即可，GBK 编码，带 `--console` 调试入口）。
 - `cnb-gui.ps1`：图形面板本体（UTF-8 带 BOM 编码）。
+- `launcher.cs` + `build-exe.bat`：用于把 `cnb-gui.ps1` 重新打包成 `CNB-GUI.exe`（依赖 Windows 自带 .NET Framework 的 `csc.exe`，零第三方依赖）。改完 ps1 后双击 `build-exe.bat` 即可重建。
 - `README.md`：本说明文档。
