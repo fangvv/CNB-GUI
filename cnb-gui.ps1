@@ -138,7 +138,7 @@ function Invoke-CnbApi {
     $p = @{
         Method  = $Method
         Uri     = $uri
-        Headers = @{ Authorization = "Bearer $token"; Accept = 'application/json' }
+        Headers = @{ Authorization = "Bearer $token"; Accept = 'application/json'; 'Accept-Language' = 'zh-CN,zh;q=0.9,en;q=0.8' }
     }
     if ($Body) { $p.Body = ($Body | ConvertTo-Json -Compress); $p.ContentType = 'application/json' }
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }

@@ -51,6 +51,7 @@
 ## 功能亮点
 
 - **环境列表**：一次看清所有开发环境的状态 / 仓库 / 分支 / 构建号 / 创建时间 / 备份文件数，运行中的绿色、已关闭的灰色。
+- **中文界面同步**：所有 API 请求携带 `Accept-Language: zh-CN`，环境列表、额度、启动/停止等行为与网页端中文环境一致，不会出现“网页端中文、工具端英文”的割裂。
 - **一键启动并连接**：没有环境就新建，已有就直接连；就绪后自动拉起本地 IDE。
 - **停止 / 删除 / 全部收工**：支持选中操作，未选中时默认作用于全部运行中 / 已关闭的环境。
 - **多客户端**：支持 VSCode、VSCode Insiders、Cursor、CodeBuddy（国内 / 国际版）、Windsurf、Zed，在设置里切换，连接地址会按所选客户端自动取。
@@ -77,7 +78,7 @@
 ## 设计思路
 
 - **零安装、零依赖**：只依赖 Windows 自带的 PowerShell 5.1 与 .NET WinForms，不引入任何运行时；想省事可直接用单文件版 `CNB-GUI.exe`。
-- **直连 OpenAPI**：直接调用 `https://api.cnb.cool` 的 OpenAPI，不依赖第三方 CLI，行为完全可控。
+- **直连 OpenAPI**：直接调用 `https://api.cnb.cool` 的 OpenAPI，不依赖第三方 CLI，行为完全可控；请求带 `Accept-Language: zh-CN`，与网页端保持一致的中文环境。
 - **令牌本地加密**：访问令牌用 Windows DPAPI 加密后保存在本机 `%APPDATA%\cnb-ws\config.json`，换电脑或换 Windows 用户需重新填写，绝不明文落盘。
 - **无黑窗口启动**：无论是单文件版 `CNB-GUI.exe` 还是 `CNB-Workspace.bat`，都会把 PowerShell 以隐藏方式拉起，双击不留黑色命令行窗口；关面板也不会把 VSCode / 浏览器一起带走（打开链接统一走常驻的 `explorer.exe` 中转）。
 - **托盘 + 单例**：它是常驻型工具而非一次性脚本，关窗口即缩托盘；单例用内核级命名 Mutex 判重，崩了也不会留下假占用。
