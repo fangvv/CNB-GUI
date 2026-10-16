@@ -357,6 +357,101 @@ function Show-Copyable {
     $f.ShowDialog($form) | Out-Null
 }
 
+# 连接信息的表格弹窗。
+# 两列：条目名 / 内容，一行一条；右键该行或双击该行即复制该条目的内容，
+# 比把一大坨文本塞进 TextBox 清楚得多。底部「全部复制」凑齐一份；
+# 「原始返回」仍走 Show-Copyable，接口字段变了时用它排查字段叫啥。
+function Show-SshInfo {
+    param([string]$Title, [object]$Detail, [string]$EnvLabel)
+
+    $order = @(
+        @('SSH 登录',   'ssh'),
+        @('远程地址',   'remoteSsh'),
+        @('VSCode',     'vscode'),
+        @('VSCode Insiders', 'vscode-insiders'),
+        @('Cursor',     'cursor'),
+        @('CodeBuddy',  'codebuddy'),
+        @('CodeBuddy 国际版', 'codebuddycn'),
+        @('Windsurf',   'windsurf'),
+        @('Zed',        'zed'),
+        @('WebIDE',     'webide')
+    )
+    $rows = New-Object Collections.ArrayList
+    [void]$rows.Add([pscustomobject]@{ name = '环境'; value = $EnvLabel })
+    foreach ($o in $order) {
+        $v = $Detail.($o[1])          # 动态属性名：interface 字段名即客户端 key
+        if ($null -ne $v -and "$v" -ne '') { [void]$rows.Add([pscustomobject]@{ name = $o[0]; value = [string]$v }) }
+    }
+
+    $f = New-Object Windows.Forms.Form
+    $f.Text = $Title
+    $f.StartPosition = 'CenterParent'
+    $f.ClientSize = New-Object Drawing.Size(860, 420)
+    $f.MinimumSize = New-Object Drawing.Size(560, 280)
+    $f.Font = UI-Font
+
+    $lv = New-Object Windows.Forms.ListView
+    $lv.Location = New-Object Drawing.Point(12, 12)
+    $lv.Size = New-Object Drawing.Size(836, 330)
+    $lv.Anchor = 'Top, Bottom, Left, Right'
+    $lv.View = 'Details'
+    $lv.FullRowSelect = $true
+    $lv.GridLines = $true
+    $lv.HideSelection = $false
+    $lv.Font = UI-Font 9          # 内容可能很长，用小一号避免横向滚太多
+    $lv.Columns.Add('条目', 150) | Out-Null
+    $lv.Columns.Add('内容', 670) | Out-Null
+    foreach ($r in $rows) {
+        $it = $lv.Items.Add($r.name)
+        $it.SubItems.Add($r.value) | Out-Null
+    }
+
+    # 右键菜单 + 双击：复制当前行内容
+    $menu = New-Object Windows.Forms.ContextMenuStrip
+    $menu.Font = UI-Font
+    $miCopy = New-Object Windows.Forms.ToolStripMenuItem('复制本条目')
+    $miCopy.Add_Click({
+        if ($lv.SelectedItems.Count -gt 0) {
+            [Windows.Forms.Clipboard]::SetText($lv.SelectedItems[0].SubItems[1].Text)
+            Set-Status '已复制到剪贴板'
+        }
+    })
+    $menu.Items.Add($miCopy) | Out-Null
+    $lv.ContextMenuStrip = $menu
+    $lv.Add_DoubleClick({
+        if ($lv.SelectedItems.Count -gt 0) {
+            [Windows.Forms.Clipboard]::SetText($lv.SelectedItems[0].SubItems[1].Text)
+            Set-Status '已复制到剪贴板'
+        }
+    })
+
+    $bAll = New-Object Windows.Forms.Button
+    $bAll.Text = '全部复制'; $bAll.Size = New-Object Drawing.Size(104, 32)
+    $bAll.Location = New-Object Drawing.Point(526, 356)
+    $bAll.Anchor = 'Bottom, Right'
+    $bAll.Add_Click({
+        $s = ($rows | ForEach-Object { "$($_.name): $($_.value)" }) -join "`r`n"
+        [Windows.Forms.Clipboard]::SetText($s)
+        Set-Status '已复制全部条目'
+    })
+
+    $bRaw = New-Object Windows.Forms.Button
+    $bRaw.Text = '原始返回'; $bRaw.Size = New-Object Drawing.Size(104, 32)
+    $bRaw.Location = New-Object Drawing.Point(636, 356)
+    $bRaw.Anchor = 'Bottom, Right'
+    $bRaw.Add_Click({ Show-Copyable '接口原始返回（排查字段用）' ($Detail | ConvertTo-Json -Depth 4) })
+
+    $bClose = New-Object Windows.Forms.Button
+    $bClose.Text = '关闭'; $bClose.Size = New-Object Drawing.Size(104, 32)
+    $bClose.Location = New-Object Drawing.Point(746, 356)
+    $bClose.Anchor = 'Bottom, Right'
+    $bClose.Add_Click({ $f.Close() })
+
+    $f.Controls.AddRange(@($lv, $bAll, $bRaw, $bClose))
+    $f.AcceptButton = $bClose
+    $f.ShowDialog($form) | Out-Null
+}
+
 # ---------------- 业务 ----------------
 function Refresh-List {
     Busy $true
@@ -595,20 +690,7 @@ function Do-Ssh {
     if ($items.Count -eq 0) { Set-Status '没有运行中的环境'; return }
     try {
         $d = Get-Detail -Sn $items[0].sn -Slug $items[0].slug
-        # 末尾附上接口原始返回：万一哪天字段名改了（ssh / remoteSsh 取不到值），
-        # 看这段就知道真实字段叫什么，改脚本时不用去抓包。
-        $txt = @(
-            "环境        $($items[0].sn)   （$($items[0].slug) / $($items[0].branch)）"
-            ""
-            "SSH 登录    $($d.ssh)"
-            "远程地址    $($d.remoteSsh)"
-            "VSCode      $($d.vscode)"
-            "WebIDE      $($d.webide)"
-            ""
-            "—— 以下为接口原始返回，字段名对不上时用它排查 ——"
-            ($d | ConvertTo-Json -Depth 4)
-        ) -join "`r`n"
-        Show-Copyable '连接信息（可直接选中复制）' $txt
+        Show-SshInfo '连接信息（右键或双击可复制单条）' $d "$($items[0].sn)   ($($items[0].slug) / $($items[0].branch))"
     } catch { Alert $_.Exception.Message }
 }
 
