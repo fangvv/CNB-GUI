@@ -118,6 +118,59 @@ function Get-Token {
     } catch { return '' }
 }
 
+# 服务端报错时经常只回一个 JSON（{"code":400,"message":"..."}），也可能干脆是空 body。
+# 原来的做法是把 body 原样当消息弹出来：body 是空的时候，弹窗就只剩一个错误图标、
+# 一个字都没有（比如删除一个还在运行的环境时）；body 是 JSON 时又是一串没人看得懂的原文。
+# 这里统一整理成一句人话：优先取字段，其次取原文，最后回落到底层异常 + HTTP 状态码。
+function Format-ApiError {
+    param($ErrorRecord)
+    $ex = $ErrorRecord.Exception
+
+    # PS 5.1 会把错误响应的 body 放在 ErrorDetails 里；没有再退回读响应流
+    $raw = ''
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        $raw = $ErrorRecord.ErrorDetails.Message
+    }
+    if (-not $raw) {
+        try {
+            $resp = $ex.Response
+            if ($resp) {
+                $sr = New-Object IO.StreamReader($resp.GetResponseStream())
+                $raw = $sr.ReadToEnd(); $sr.Close()
+            }
+        } catch { }
+    }
+
+    $msg = ''
+    if ($raw) {
+        $j = $null
+        try { $j = $raw | ConvertFrom-Json } catch { }
+        if ($j) {
+            foreach ($k in @('message', 'errmsg', 'error', 'msg', 'reason', 'detail')) {
+                $p = $j.PSObject.Properties[$k]
+                if (-not $p -or -not $p.Value) { continue }
+                if ($p.Value -is [string]) { $msg = $p.Value; break }
+                if ($p.Value.message) { $msg = [string]$p.Value.message; break }
+            }
+        }
+        if (-not $msg) { $msg = $raw.Trim() }
+        if ($msg.Length -gt 600) { $msg = $msg.Substring(0, 600) + ' …' }
+    }
+
+    $code = 0
+    try { if ($ex.Response -and $ex.Response.StatusCode) { $code = [int]$ex.Response.StatusCode } } catch { }
+
+    if (-not $msg) {
+        # 典型的空 body 5xx：只有「远程服务器返回错误: (500) 内部服务器错误。」这种废话；
+        # 不是 HTTP 错误（超时、DNS、连接被重置）时，底层异常信息本身就是最有用的那句。
+        if ($code) { $msg = "服务端没有返回错误详情（HTTP $code）" }
+        else { $msg = $ex.Message }
+    } elseif ($code -and $msg -notmatch "\b$code\b") {
+        $msg = "$msg`n`n（HTTP $code）"
+    }
+    return $msg.Trim()
+}
+
 # ---------------- OpenAPI ----------------
 function Invoke-CnbApi {
     param(
@@ -146,12 +199,7 @@ function Invoke-CnbApi {
     try {
         Invoke-RestMethod @p
     } catch {
-        $msg = $_.Exception.Message
-        try {
-            $sr = New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())
-            $msg = $sr.ReadToEnd(); $sr.Close()
-        } catch { }
-        throw $msg
+        throw (Format-ApiError $_)
     }
 }
 
@@ -279,7 +327,7 @@ $flow.Controls.AddRange(@($btnStart, $btnStop, $btnDel, $btnClean, $btnOpen, $bt
 $toolTip = New-Object Windows.Forms.ToolTip
 $toolTip.SetToolTip($btnStart, '没有环境就新建一个，已有就直接连上；就绪后自动拉起 VSCode')
 $toolTip.SetToolTip($btnStop,  '未选中时，停止所有运行中的环境')
-$toolTip.SetToolTip($btnDel,   '未选中时，删除所有已关闭的环境（最常用）')
+$toolTip.SetToolTip($btnDel,   '未选中时，删除所有已关闭的环境（最常用）；选中的运行中环境会先停止再删除')
 $toolTip.SetToolTip($btnClean, '停止 + 删除全部环境，收工用')
 $toolTip.SetToolTip($btnOpen,  '用 VSCode 远程连接选中的环境')
 $toolTip.SetToolTip($btnSsh,   '弹出连接信息，可选中复制（含接口原始返回，便于排查）')
@@ -296,25 +344,49 @@ $form.Controls.Add($top)
 # ---------------- 界面辅助 ----------------
 function Set-Status($msg) { $statusLabel.Text = $msg; [Windows.Forms.Application]::DoEvents() }
 function Sync-Input { $script:cfg.repo = $txtRepo.Text.Trim(); $script:cfg.branch = $txtBr.Text.Trim() }
-# 「打开 VSCode / SSH 地址 / 复制 SSH / 停止」只在有运行中的目标时才可点，否则置灰
+# 动作按钮能不能点，取决于「列表里实际有什么」和「有没有选中项」：
+#   没有环境         → 删除 / 全部收工 / 停止 / 打开 / SSH 全部置灰
+#   有环境但全在跑   → 删除置灰（默认只删已关闭的），停止 / 连接类可点
+#   有环境但全关着   → 停止 / 连接类置灰，删除 / 全部收工可点
+#   有选中项         → 以选中项为准，而不是拿全量列表算
+# 数字由 Refresh-List 每次读取后更新，选中项变化时重新算一遍。
 $script:runCount = 0
+$script:totalCount = 0
+$script:closedCount = 0
+$script:busy = $false
 function Update-Actions {
     $sel = @($lv.SelectedItems)
-    if ($sel.Count -gt 0) {
-        $hasRunning = (@($sel | Where-Object { $_.Tag.status -eq 'running' }).Count -gt 0)
+    $hasSel = $sel.Count -gt 0
+    if ($hasSel) {
+        $run = @($sel | Where-Object { $_.Tag.status -eq 'running' }).Count
+        $closed = $sel.Count - $run
     } else {
-        $hasRunning = $script:runCount -gt 0
+        $run = $script:runCount
+        $closed = $script:closedCount
     }
-    foreach ($b in @($btnOpen, $btnSsh, $btnCopySsh, $btnStop)) { $b.Enabled = $hasRunning }
+
+    $btnStart.Enabled   = -not $script:busy
+    $btnStop.Enabled    = -not $script:busy -and $run -gt 0
+    $btnOpen.Enabled    = -not $script:busy -and $run -gt 0
+    $btnSsh.Enabled     = -not $script:busy -and $run -gt 0
+    $btnCopySsh.Enabled = -not $script:busy -and $run -gt 0
+    # 有选中项就删选中的（运行中的会先停止）；没选中时默认只删已关闭的，得有已关闭的才可点
+    $btnDel.Enabled     = -not $script:busy -and ($hasSel -or $closed -gt 0)
+    $btnClean.Enabled   = -not $script:busy -and $script:totalCount -gt 0
 }
 
 function Busy($on) {
+    $script:busy = $on
     $form.Cursor = if ($on) { [Windows.Forms.Cursors]::WaitCursor } else { [Windows.Forms.Cursors]::Default }
     foreach ($b in @($btnStart, $btnStop, $btnDel, $btnClean, $btnOpen, $btnSsh, $btnCopySsh, $btnRefresh, $btnSet)) { $b.Enabled = -not $on }
     if (-not $on) { Update-Actions }
     [Windows.Forms.Application]::DoEvents()
 }
-function Alert($msg) { [Windows.Forms.MessageBox]::Show($form, $msg, 'CNB 开发环境', 'OK', 'Error') | Out-Null }
+function Alert($msg) {
+    # 兜底：消息为空时不要弹一个只有标题和错误图标的空框，至少告诉用户下一步做什么
+    if (-not ([string]$msg).Trim()) { $msg = '操作失败，但没有拿到错误信息。请重试一次；仍然失败可用 --console 启动看详细输出。' }
+    [Windows.Forms.MessageBox]::Show($form, $msg, 'CNB 开发环境', 'OK', 'Error') | Out-Null
+}
 function Confirm($msg) { return ([Windows.Forms.MessageBox]::Show($form, $msg, '请确认', 'YesNo', 'Question') -eq 'Yes') }
 function Selected-Items { return @($lv.SelectedItems | ForEach-Object { $_.Tag }) }
 
@@ -480,6 +552,8 @@ function Refresh-List {
         $total  = $list.Count
         $closed = [math]::Max(0, $total - $run)
         $script:runCount = $run
+        $script:totalCount = $total
+        $script:closedCount = $closed
         Set-Status "共 $total 个环境 · 运行中 $run · 已关闭 $closed   （双击运行中的行直接连接；双击已关闭的行按它的仓库/分支重开）"
         $notify.Text = "CNB 开发环境 · 运行中 $run · 已关闭 $closed"
     } catch { Alert $_.Exception.Message; Set-Status '读取失败' } finally { Busy $false }
@@ -616,7 +690,8 @@ function Do-Start {
 
 function Do-Stop {
     Sync-Input
-    $items = Selected-Items
+    # 选中项里可能混着已关闭的，停止只对运行中的发请求，别拿已关闭的去撞接口
+    $items = @(Selected-Items | Where-Object { $_.status -eq 'running' })
     if ($items.Count -eq 0) { $items = @(Get-Workspaces -Status 'running') }
     if ($items.Count -eq 0) { Set-Status '没有运行中的环境'; return }
     if (-not (Confirm "停止这 $($items.Count) 个环境？")) { return }
@@ -635,18 +710,37 @@ function Remove-Many {
     param($Items, [string]$Title)
     if ($Items.Count -eq 0) { Set-Status '没有需要删除的环境'; return }
     $preview = ($Items | ForEach-Object { "  · $($_.sn)  ($($_.slug))" }) -join "`n"
-    if (-not (Confirm "$Title $($Items.Count) 个环境？`n`n$preview`n`n未提交的代码会按平台备份机制保存。")) { return }
+    # 直接删运行中的环境会报错，而报错响应往往没有可读信息（弹窗看起来就像「没有理由」）。
+    # 删除本身就是要销毁，跑着的先停掉再删是等效的，所以在确认框里写清楚。
+    $running = @($Items | Where-Object { $_.status -eq 'running' })
+    $hint = ''
+    if ($running.Count -gt 0) { $hint = "`n`n其中 $($running.Count) 个正在运行，会先停止再删除。" }
+    if (-not (Confirm "$Title $($Items.Count) 个环境？`n`n$preview`n`n未提交的代码会按平台备份机制保存。$hint")) { return }
     Busy $true
     $ok = 0
+    $step = '删除'
+    $sn = ''
     try {
         foreach ($w in $Items) {
+            $sn = $w.sn
+            if ($w.status -eq 'running') {
+                $step = '停止'
+                Set-Status "停止 $($w.sn) ..."
+                Invoke-CnbApi -Method Post -Path '/workspace/stop' -Body @{ sn = $w.sn } | Out-Null
+                Start-Sleep -Seconds 2
+            }
+            $step = '删除'
             Set-Status "删除 $($w.sn) ..."
             Invoke-CnbApi -Method Post -Path '/workspace/delete' -Body @{ sn = $w.sn } | Out-Null
             $ok++
         }
         Refresh-List
         Set-Status "已删除 $ok 个环境"
-    } catch { Alert $_.Exception.Message; Refresh-List } finally { Busy $false }
+    } catch {
+        # 带上失败的是哪个环境、卡在哪一步，否则用户只知道「失败了」
+        Alert "$step $sn 失败（已完成 $ok 个）：`n`n$($_.Exception.Message)"
+        Refresh-List
+    } finally { Busy $false }
 }
 
 function Do-Delete {
@@ -666,26 +760,34 @@ function Do-Clean {
     if ($all.Count -eq 0) { Set-Status '当前没有任何环境'; return }
     if (-not (Confirm "停止并删除全部 $($all.Count) 个环境？（收工用，未提交代码会自动备份）")) { return }
     Busy $true
+    $step = '停止'
+    $sn = ''
     try {
         foreach ($w in $all) {
+            $sn = $w.sn
             if ($w.status -eq 'running') {
                 Set-Status "停止 $($w.sn) ..."
                 Invoke-CnbApi -Method Post -Path '/workspace/stop' -Body @{ sn = $w.sn } | Out-Null
                 Start-Sleep -Seconds 2
             }
         }
+        $step = '删除'
         foreach ($w in $all) {
+            $sn = $w.sn
             Set-Status "删除 $($w.sn) ..."
             Invoke-CnbApi -Method Post -Path '/workspace/delete' -Body @{ sn = $w.sn } | Out-Null
         }
         Refresh-List
         Set-Status "已清空 $($all.Count) 个环境"
-    } catch { Alert $_.Exception.Message; Refresh-List } finally { Busy $false }
+    } catch {
+        Alert "$step $sn 失败：`n`n$($_.Exception.Message)"
+        Refresh-List
+    } finally { Busy $false }
 }
 
 function Do-Ssh {
     Sync-Input
-    $items = Selected-Items
+    $items = @(Selected-Items | Where-Object { $_.status -eq 'running' })
     if ($items.Count -eq 0) { $items = @(Get-Workspaces -Status 'running') }
     if ($items.Count -eq 0) { Set-Status '没有运行中的环境'; return }
     try {
@@ -697,7 +799,7 @@ function Do-Ssh {
 # 不弹窗，直接把 SSH 登录命令塞进剪贴板 —— 这才是「我要用这个地址」时最快的路径
 function Do-CopySsh {
     Sync-Input
-    $items = Selected-Items
+    $items = @(Selected-Items | Where-Object { $_.status -eq 'running' })
     if ($items.Count -eq 0) { $items = @(Get-Workspaces -Status 'running') }
     if ($items.Count -eq 0) { Set-Status '没有运行中的环境'; return }
     try {
@@ -863,7 +965,7 @@ $btnDel.Add_Click({ Do-Delete })
 $btnClean.Add_Click({ Do-Clean })
 $btnOpen.Add_Click({
     Sync-Input
-    $items = Selected-Items
+    $items = @(Selected-Items | Where-Object { $_.status -eq 'running' })
     if ($items.Count -eq 0) { $items = @(Get-Workspaces -Status 'running') }
     if ($items.Count -eq 0) { Alert '没有运行中的环境，先点「启动并连接」' ; return }
     Connect-Sn $items[0].sn $items[0].slug
